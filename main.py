@@ -1,9 +1,9 @@
 import os
 import io
 import json
-import time
+import asyncio
 import logging
-import requests
+import httpx
 import openpyxl
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
@@ -18,31 +18,36 @@ CARGO_API_KEY = os.environ.get("CARGO_API_KEY", "032c2189a0ae75dca4c022d4c99d7a9
 REQUEST_DELAY_S = float(os.environ.get("REQUEST_DELAY_S", "1.5"))
 
 
-def call_cargo(linkedin_url: str) -> str | None:
-    """Call getcargo.io and return email string, or None on failure."""
+async def call_cargo(linkedin_url: str) -> str | None:
+    """Call getcargo.io asynchronously and return email string, or None on failure."""
     try:
-        resp = requests.post(
-            CARGO_API_URL,
-            headers={
-                "Authorization": f"Bearer {CARGO_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={"linkedinUrl": linkedin_url},
-            timeout=60,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                CARGO_API_URL,
+                headers={
+                    "Authorization": f"Bearer {CARGO_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={"linkedinUrl": linkedin_url},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        logger.info(f"Cargo response for {linkedin_url}: {json.dumps(data)}")
 
         # Handle various response shapes
-        email = (
-            data.get("email")
-            or data.get("data", {}).get("email")
-            or data.get("result", {}).get("email")
-            or data.get("output", {}).get("email")
-            or (data.get("output") if isinstance(data.get("output"), str) and "@" in str(data.get("output", "")) else None)
-        )
-        logger.info(f"Cargo response for {linkedin_url}: {json.dumps(data)}")
-        return email
+        if isinstance(data.get("email"), str) and "@" in data["email"]:
+            return data["email"]
+        if isinstance(data.get("data"), dict) and "@" in str(data["data"].get("email", "")):
+            return data["data"]["email"]
+        if isinstance(data.get("result"), dict) and "@" in str(data["result"].get("email", "")):
+            return data["result"]["email"]
+        if isinstance(data.get("output"), str) and "@" in data["output"]:
+            return data["output"]
+        if isinstance(data.get("output"), dict) and "@" in str(data["output"].get("email", "")):
+            return data["output"]["email"]
+        return None
+
     except Exception as e:
         logger.error(f"Cargo API error for {linkedin_url}: {e}")
         return None
@@ -62,14 +67,12 @@ async def enrich(file: UploadFile = File(...)):
     wb = openpyxl.load_workbook(io.BytesIO(contents))
     ws = wb.active
 
-    # Find column indices (1-based)
     headers = [cell.value for cell in ws[1]]
     try:
         url_col = headers.index("LinkedIn URL") + 1
     except ValueError:
         raise HTTPException(status_code=400, detail="Column 'LinkedIn URL' not found in sheet.")
 
-    # Add Email column if missing
     if "Email" not in headers:
         email_col = len(headers) + 1
         ws.cell(row=1, column=email_col, value="Email")
@@ -84,13 +87,13 @@ async def enrich(file: UploadFile = File(...)):
         existing_email = ws.cell(row=row_idx, column=email_col).value
 
         if not linkedin_url or existing_email:
-            continue  # skip empty rows or already-enriched rows
+            continue
 
         logger.info(f"[{row_idx - 1}/{total}] Enriching {linkedin_url}")
-        email = call_cargo(str(linkedin_url).strip())
+        email = await call_cargo(str(linkedin_url).strip())
         ws.cell(row=row_idx, column=email_col, value=email or "")
         enriched += 1
-        time.sleep(REQUEST_DELAY_S)
+        await asyncio.sleep(REQUEST_DELAY_S)
 
     logger.info(f"Done. Enriched {enriched}/{total} rows.")
 
