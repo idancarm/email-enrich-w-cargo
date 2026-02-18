@@ -7,6 +7,11 @@ import httpx
 import openpyxl
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+
+class LookupRequest(BaseModel):
+    linkedin_url: str
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -56,6 +61,13 @@ async def call_cargo(linkedin_url: str) -> str | None:
 @app.get("/")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/lookup")
+async def lookup(req: LookupRequest):
+    """Return just the email for a single LinkedIn URL."""
+    email = await call_cargo(req.linkedin_url.strip())
+    return {"email": email or ""}
 
 
 @app.post("/enrich")
