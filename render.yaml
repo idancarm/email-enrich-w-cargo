@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: li-email-enrichment
+    runtime: docker
+    envVars:
+      - key: CARGO_API_KEY
+        value: 032c2189a0ae75dca4c022d4c99d7a96348f4fcbb8fcfd27d24ee86307382b32
+      - key: REQUEST_DELAY_S
+        value: "1.5"
